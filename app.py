@@ -251,14 +251,16 @@ spvar_results, impacts, is_stable, max_eig, depts_ord, W = estimate_spvar(gdf_pa
 # -----------------------------------------------------------------------------
 def make_choropleth(year, variable):
     df = gdf_panel[gdf_panel["year"] == year].copy()
-fig = px.choropleth_map(              # <--- Función actualizada
-    df,
-    geojson=df.geometry.__geo_interface__,
-    locations=df.index,
-    color=variable,
-    hover_name="departamento",
-    hover_data={variable: ":.2f"},
-    map_style="carto-positron", 
+def make_choropleth(year, variable):
+    df = gdf_panel[gdf_panel["year"] == year].copy()
+    fig = px.choropleth_map(
+        df,
+        geojson=df.geometry.__geo_interface__,
+        locations=df.index,
+        color=variable,
+        hover_name="departamento",
+        hover_data={variable: ":.2f"},
+        map_style="carto-positron",
         center={"lat": 4.5, "lon": -73.0},
         zoom=4.4,
         color_continuous_scale="YlOrRd" if variable == "desempleo" else "Viridis",
