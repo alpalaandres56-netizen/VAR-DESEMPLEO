@@ -44,7 +44,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import folium
 from folium.plugins import Fullscreen
-import gradio as gr
+import streamlit as st
 from typing import Dict, List, Any
 
 # -----------------------------------------------------------------------------
