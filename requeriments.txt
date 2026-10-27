@@ -1,9 +1,12 @@
+geopandas==1.2.0
+shapely==2.1.2
+pyproj==3.8.0
+pyogrio==0.13.0
 numpy
 pandas
 scipy
 statsmodels
 scikit-learn
-geopandas==1.2.0
 shapely
 pyproj
 libpysal
