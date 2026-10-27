@@ -325,13 +325,13 @@ def make_lisa_map(year, variable="desempleo"):
         "No significativo": "#f0f0f0"
     }
 
-   fig = px.choropleth_map(              # <--- Función actualizada
-    df,
-    geojson=df.geometry.__geo_interface__,
-    locations=df.index,
-    color="LISA",
-    hover_name="departamento",
-    map_style="carto-positron", 
+    fig = px.choropleth_map(
+        df,
+        geojson=df.geometry.__geo_interface__,
+        locations=df.index,
+        color="LISA",
+        hover_name="departamento",
+        map_style="carto-positron",
         center={"lat": 4.5, "lon": -73.0},
         zoom=4.4,
         color_discrete_map=color_map,
