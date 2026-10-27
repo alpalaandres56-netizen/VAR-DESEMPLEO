@@ -3,7 +3,7 @@ pandas
 scipy
 statsmodels
 scikit-learn
-geopandas
+geopandas==1.2.0
 shapely
 pyproj
 libpysal
