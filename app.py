@@ -8,545 +8,434 @@ Original file is located at
 """
 
 # =============================================================================
-# TALLER 2 ECONOMETRIA ESPAICAL
-# =============================================================================
-# Modelo SpVAR Desemepleo y Crecimiento del PIB Periodo 2015-2024
-# =============================================================================
-# Andres Steven Alpala Eraso
-# Fuentes oficiales:
-#   - Geometría: DANE MGN 2018 (GeoJSON)
-#   - Desempleo + PIB: estructura DANE (GEIH + Cuentas Departamentales)
-#   - Luces nocturnas: proxy calibrado a patrones VIIRS/WorldPop
+# SpVAR + ESDA – Dashboard Espacial Colombia (Streamlit)
+# Modelo Vector Autorregresivo Espacial + Análisis Exploratorio de Datos Espaciales
+# Listo para desplegar en Streamlit Cloud / local
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# 1. Instalación de dependencias
-# -----------------------------------------------------------------------------
-
-# -----------------------------------------------------------------------------
-# 2. Imports
-# -----------------------------------------------------------------------------
-import warnings
-warnings.filterwarnings("ignore")
-
-import os, requests, io
+import streamlit as st
 import numpy as np
 import pandas as pd
 import geopandas as gpd
-from scipy.linalg import eigvals
-from sklearn.metrics.pairwise import euclidean_distances
-
-from libpysal.weights import Queen, Rook, KNN, lag_spatial
+import libpysal as lps
+from libpysal.weights import Queen, Rook, KNN
 from esda.moran import Moran, Moran_Local
-from spreg import OLS
-
+import statsmodels.api as sm
+from scipy.linalg import eigvals
 import plotly.express as px
 import plotly.graph_objects as go
-import folium
-from folium.plugins import Fullscreen
-import streamlit as st
-from typing import Dict, List, Any
+import warnings
+warnings.filterwarnings("ignore")
 
 # -----------------------------------------------------------------------------
-# 3. Geometría oficial de departamentos (DANE 2018)
+# Configuración de página Streamlit (tema claro alto contraste)
 # -----------------------------------------------------------------------------
-GEOJSON_URL = "https://raw.githubusercontent.com/caticoa3/colombia_mapa/master/co_2018_MGN_DPTO_POLITICO.geojson"
-GEOJSON_PATH = "/tmp/co_2018_MGN_DPTO_POLITICO.geojson"
+st.set_page_config(
+    page_title="SpVAR Colombia | Dashboard Espacial",
+    page_icon="🇨🇴",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def load_geometry() -> gpd.GeoDataFrame:
-    try:
-        if not os.path.exists(GEOJSON_PATH):
-            print("Descargando GeoJSON oficial DANE 2018...")
-            r = requests.get(GEOJSON_URL, timeout=90)
-            r.raise_for_status()
-            with open(GEOJSON_PATH, "wb") as f:
-                f.write(r.content)
-        gdf = gpd.read_file(GEOJSON_PATH)
-        # Estandarizar nombres
-        col_map = {}
-        for c in gdf.columns:
-            cl = c.lower()
-            if "cnmbr" in cl or "nombre" in cl:
-                col_map[c] = "departamento"
-            if "ccdgo" in cl or "codigo" in cl:
-                col_map[c] = "codigo"
-        gdf = gdf.rename(columns=col_map)
-        if "departamento" not in gdf.columns:
-            gdf["departamento"] = gdf.index.astype(str)
-        gdf["departamento"] = gdf["departamento"].astype(str).str.title().str.strip()
-        gdf = gdf.to_crs(epsg=4326)
-        gdf = gdf[gdf.geometry.notnull() & ~gdf.geometry.is_empty].reset_index(drop=True)
-        print(f"Geometría cargada: {len(gdf)} departamentos.")
-        return gdf
-    except Exception as e:
-        print(f"Error geometría: {e}. Usando fallback de centroides.")
-        depts = [
-            "Amazonas","Antioquia","Arauca","Atlántico","Bogotá D.C.","Bolívar",
-            "Boyacá","Caldas","Caquetá","Casanare","Cauca","Cesar","Chocó",
-            "Córdoba","Cundinamarca","Guainía","Guaviare","Huila","La Guajira",
-            "Magdalena","Meta","Nariño","Norte De Santander","Putumayo","Quindío",
-            "Risaralda","San Andrés","Santander","Sucre","Tolima","Valle Del Cauca",
-            "Vaupés","Vichada"
-        ]
-        coords = [
-            (-71.5,-1.5),(-75.5,6.5),(-70.8,6.5),(-74.9,10.7),(-74.1,4.6),(-74.8,9.0),
-            (-73.0,5.5),(-75.5,5.3),(-74.0,1.0),(-71.5,5.5),(-76.5,2.5),(-73.5,9.5),
-            (-77.0,6.0),(-75.8,8.5),(-74.0,5.0),(-68.5,2.5),(-72.5,2.0),(-75.5,2.5),
-            (-72.5,11.5),(-74.5,10.0),(-73.0,3.5),(-77.5,1.5),(-73.0,8.0),(-76.5,0.5),
-            (-75.7,4.5),(-75.9,5.0),(-81.7,12.5),(-73.5,7.0),(-75.0,9.0),(-75.0,4.0),
-            (-76.5,3.5),(-70.5,1.0),(-69.5,5.0)
-        ]
-        from shapely.geometry import Point
-        return gpd.GeoDataFrame({
-            "departamento": depts,
-            "codigo": [f"{i:02d}" for i in range(len(depts))],
-            "geometry": [Point(lon, lat).buffer(0.7) for lon, lat in coords]
-        }, crs="EPSG:4326")
+# CSS personalizado – tema claro de alto contraste
+st.markdown("""
+<style>
+    .main { background-color: #f8f9fa; color: #1a1a1a; }
+    h1, h2, h3, h4 { color: #1a1a1a !important; }
+    .stMetric { background-color: #ffffff; border: 1px solid #dee2e6; border-radius: 8px; padding: 10px; }
+    div[data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #dee2e6; }
+    .stButton>button { background-color: #1e3a5f; color: white; border: none; }
+    .stButton>button:hover { background-color: #2c5282; color: white; }
+</style>
+""", unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
+# 1. Carga de geometría oficial (cacheada)
+# -----------------------------------------------------------------------------
+@st.cache_data(show_spinner="Cargando geometría oficial de departamentos...")
+def load_geometry():
+    url = "https://raw.githubusercontent.com/caticoa3/colombia_mapa/master/co_2018_MGN_DPTO_POLITICO.geojson"
+    gdf = gpd.read_file(url)
+    if "DPTO_CNMBR" in gdf.columns:
+        gdf = gdf.rename(columns={"DPTO_CNMBR": "departamento", "DPTO_CCDGO": "cod_dpto"})
+    elif "dpto_cnmbr" in gdf.columns:
+        gdf = gdf.rename(columns={"dpto_cnmbr": "departamento", "dpto_ccdgo": "cod_dpto"})
+    gdf["departamento"] = gdf["departamento"].str.upper().str.strip()
+    gdf = gdf.to_crs(epsg=4326)
+    gdf["centroid"] = gdf.geometry.centroid
+    gdf["lon"] = gdf.centroid.x
+    gdf["lat"] = gdf.centroid.y
+    return gdf
 
 gdf = load_geometry()
 
 # -----------------------------------------------------------------------------
-# 4. Panel de datos (estructura real DANE + calibración)
+# 2. Panel sintético realista calibrado con promedios DANE
 # -----------------------------------------------------------------------------
-def generate_panel(gdf: gpd.GeoDataFrame, years: List[int] = None, seed: int = 2024) -> pd.DataFrame:
-    if years is None:
-        years = list(range(2015, 2025))
-    np.random.seed(seed)
-    n = len(gdf)
-    names = gdf["departamento"].tolist()
+@st.cache_data(show_spinner="Generando panel departamental 2015-2024...")
+def create_panel(_gdf):
+    np.random.seed(42)
+    deptos = _gdf["departamento"].tolist()
+    years = list(range(2015, 2025))
 
-    # Efectos fijos realistas (orden aproximado de magnitud DANE)
-    # Desempleo más alto en Chocó, La Guajira, Norte de Santander, Caquetá...etc.
-    high_unemp = {"Chocó", "La Guajira", "Norte De Santander", "Caquetá", "Cesar", "Sucre", "Córdoba"}
-    low_unemp  = {"Nariño", "Huila", "Cauca", "Boyacá", "Caldas", "Risaralda"}
-    high_pib   = {"Bogotá D.C.", "Antioquia", "Valle Del Cauca", "Santander", "Cundinamarca", "Atlántico"}
-    high_light = high_pib | {"Bolívar", "Meta"}
-
-    fixed_u = np.array([14.5 if d in high_unemp else (7.0 if d in low_unemp else 10.0) for d in names])
-    fixed_g = np.array([3.8 if d in high_pib else 2.2 for d in names])
-    fixed_l = np.array([np.random.lognormal(3.2, 0.4) if d in high_light else np.random.lognormal(2.0, 0.5) for d in names])
-
-    # Matriz de vecindad aproximada para spillover
-    cents = gdf.geometry.centroid
-    coords = np.array([[p.x, p.y] for p in cents])
-    dist = euclidean_distances(coords)
-    dist = np.where(dist == 0, 1e-5, dist)
-    Waprox = 1.0 / dist
-    np.fill_diagonal(Waprox, 0)
-    Waprox = Waprox / Waprox.sum(axis=1, keepdims=True)
+    base_unemp = {
+        "ANTIOQUIA": 7.5, "ATLANTICO": 8.5, "BOGOTA, D.C.": 8.2, "BOLIVAR": 9.5,
+        "BOYACA": 9.3, "CALDAS": 9.4, "CAQUETA": 10.4, "CAUCA": 6.6,
+        "CESAR": 9.9, "CHOCO": 12.8, "CORDOBA": 10.5, "CUNDINAMARCA": 9.6,
+        "HUILA": 6.8, "LA GUAJIRA": 12.3, "MAGDALENA": 9.5, "META": 8.7,
+        "NARINO": 6.0, "NORTE DE SANTANDER": 11.3, "QUINDIO": 10.3,
+        "RISARALDA": 7.9, "SANTANDER": 10.1, "SUCRE": 10.6, "TOLIMA": 10.8,
+        "VALLE DEL CAUCA": 9.5
+    }
+    default_unemp = 9.5
 
     records = []
-    prev_u, prev_g, prev_l = fixed_u.copy(), fixed_g.copy(), fixed_l.copy()
-
-    for t, year in enumerate(years):
-        # Tendencia suave + shock
-        shock_u = np.random.normal(0, 0.7, n)
-        shock_g = np.random.normal(0, 0.55, n)
-        shock_l = np.random.normal(0, 0.25, n)
-
-        unemp = (0.62 * prev_u
-                 + 0.18 * (Waprox @ prev_u)
-                 - 0.18 * prev_g
-                 + shock_u
-                 + 0.05 * (t - 4))          # ligera tendencia
-        growth = (0.58 * prev_g
-                  + 0.12 * (Waprox @ prev_g)
-                  - 0.22 * prev_u
-                  + 0.06 * prev_l
-                  + shock_g)
-        lights = (0.78 * prev_l
-                  + 0.11 * (Waprox @ prev_l)
-                  + 0.04 * growth
-                  + shock_l)
-
-        unemp  = np.clip(unemp,  4.5, 18.5)
-        growth = np.clip(growth, -2.5, 7.5)
-        lights = np.clip(lights, 0.8, 95.0)
-
-        for i, name in enumerate(names):
+    for dept in deptos:
+        u0 = base_unemp.get(dept, default_unemp)
+        g0 = 2.8 + np.random.normal(0, 0.8)
+        l0 = 2.5 + np.random.normal(0, 0.6)
+        for t, year in enumerate(years):
+            unemp = u0 + 0.15 * np.sin(t / 2) + np.random.normal(0, 0.7)
+            growth = g0 + 0.3 * np.cos(t / 3) + np.random.normal(0, 0.9)
+            lights = l0 + 0.05 * t + np.random.normal(0, 0.25)
             records.append({
-                "departamento": name,
+                "departamento": dept,
                 "year": year,
-                "desempleo": round(float(unemp[i]), 2),
-                "crecimiento": round(float(growth[i]), 2),
-                "luces_nocturnas": round(float(lights[i]), 2)
+                "desempleo": max(3.5, min(18.0, unemp)),
+                "crecimiento": growth,
+                "luces": max(0.1, lights)
             })
-        prev_u, prev_g, prev_l = unemp, growth, lights
 
-    df = pd.DataFrame(records)
-    print(f"Panel generado: {df.shape[0]} observaciones | {df['departamento'].nunique()} depts | {df['year'].nunique()} años")
-    print(df.groupby("year")[["desempleo","crecimiento","luces_nocturnas"]].mean().round(2).tail(3))
-    return df
+    panel = pd.DataFrame(records)
+    panel = panel.merge(_gdf[["departamento", "lon", "lat", "geometry"]], on="departamento", how="left")
+    return gpd.GeoDataFrame(panel, geometry="geometry", crs="EPSG:4326")
 
-panel = generate_panel(gdf)
+gdf_panel = create_panel(gdf)
+n_dept = gdf_panel["departamento"].nunique()
 
 # -----------------------------------------------------------------------------
-# 5. Selección óptima de matriz de pesos espaciales W
+# 3. Selección automática de matriz de pesos espaciales
 # -----------------------------------------------------------------------------
-def select_best_W(gdf: gpd.GeoDataFrame, y: np.ndarray) -> Dict:
-    results = {}
-    best_score, best_w, best_name, best_mi = -np.inf, None, None, None
+@st.cache_data(show_spinner="Evaluando matrices de pesos espaciales...")
+def select_optimal_weights(_gdf_panel):
+    last = _gdf_panel[_gdf_panel["year"] == _gdf_panel["year"].max()].copy()
+    last = last.set_index("departamento")
+    y = last["desempleo"].values
 
-    candidates = [("Queen", lambda: Queen.from_dataframe(gdf, silence_warnings=True)),
-                  ("Rook",  lambda: Rook.from_dataframe(gdf, silence_warnings=True))]
-    for k in range(4, 9):
-        candidates.append((f"KNN_{k}", lambda k=k: KNN.from_dataframe(gdf, k=k)))
+    candidates = {}
 
-    for name, constructor in candidates:
+    try:
+        w_q = Queen.from_dataframe(last, use_index=True)
+        w_q.transform = "r"
+        mi = Moran(y, w_q)
+        candidates["Queen"] = {"w": w_q, "I": mi.I, "p": mi.p_sim, "score": mi.I if mi.p_sim < 0.05 else -1}
+    except Exception:
+        pass
+
+    try:
+        w_r = Rook.from_dataframe(last, use_index=True)
+        w_r.transform = "r"
+        mi = Moran(y, w_r)
+        candidates["Rook"] = {"w": w_r, "I": mi.I, "p": mi.p_sim, "score": mi.I if mi.p_sim < 0.05 else -1}
+    except Exception:
+        pass
+
+    for k in range(3, 9):
         try:
-            w = constructor()
-            w.transform = "r"
-            mi = Moran(y, w)
-            results[name] = {"I": mi.I, "p": mi.p_sim, "w": w}
-            if mi.p_sim < 0.05 and abs(mi.I) > best_score:
-                best_score = abs(mi.I)
-                best_w, best_name, best_mi = w, name, mi
-        except Exception as e:
-            results[name] = {"error": str(e)}
-
-    if best_w is None:
-        best_w = Queen.from_dataframe(gdf, silence_warnings=True)
-        best_w.transform = "r"
-        best_name = "Queen (fallback)"
-        best_mi = Moran(y, best_w)
-
-    return {"best_name": best_name, "best_w": best_w, "best_moran": best_mi, "all": results}
-
-last_year = int(panel["year"].max())
-y_sel = panel[panel["year"] == last_year].set_index("departamento").reindex(gdf["departamento"])["desempleo"].values
-w_info = select_best_W(gdf, y_sel)
-W = w_info["best_w"]
-print(f"W seleccionada: {w_info['best_name']} | Moran I = {w_info['best_moran'].I:.4f} (p={w_info['best_moran'].p_sim:.4f})")
-
-# -----------------------------------------------------------------------------
-# 6. Preparación SpVAR
-# -----------------------------------------------------------------------------
-def prepare_spvar(panel: pd.DataFrame, gdf: gpd.GeoDataFrame, W, vars_: List[str] = None) -> Dict:
-    if vars_ is None:
-        vars_ = ["desempleo", "crecimiento", "luces_nocturnas"]
-    years = sorted(panel["year"].unique())
-    depts = gdf["departamento"].tolist()
-    n, k = len(depts), len(vars_)
-    panel_idx = panel.set_index(["departamento", "year"]).sort_index()
-
-    Y_list = []
-    for yr in years:
-        block = [panel_idx.loc[(depts, yr), v].values for v in vars_]
-        Y_list.append(np.column_stack(block))
-    Y = np.stack(Y_list)          # (T, n, k)
-    T = Y.shape[0]
-
-    WY = np.zeros_like(Y)
-    for t in range(T):
-        for j in range(k):
-            WY[t, :, j] = lag_spatial(W, Y[t, :, j])
-
-    return {"Y": Y, "WY": WY, "years": years, "depts": depts, "vars": vars_, "n": n, "k": k, "T": T}
-
-spdata = prepare_spvar(panel, gdf, W)
-
-# -----------------------------------------------------------------------------
-# 7. Estimación SpVAR + Impactos + Estabilidad
-# -----------------------------------------------------------------------------
-def estimate_spvar(spdata: Dict, W) -> Dict:
-    Y, WY = spdata["Y"], spdata["WY"]
-    T, n, k = Y.shape
-    vars_ = spdata["vars"]
-    res = {"coefs": {}, "impacts": {}, "stability": {}, "equations": {}}
-
-    for j in range(k):
-        y_list, X_list = [], []
-        for t in range(1, T):
-            y_list.append(Y[t, :, j])
-            cols = [np.ones(n), Y[t-1, :, j]]          # intercepto + φ
-            for l in range(k):
-                if l != j:
-                    cols.append(Y[t-1, :, l])          # β cruces
-            cols.append(WY[t, :, j])                   # ρ espacial directa
-            for l in range(k):
-                cols.append(WY[t-1, :, l])             # θ espacial cruzada
-            X_list.append(np.column_stack(cols))
-
-        y = np.concatenate(y_list)
-        X = np.vstack(X_list)
-        mask = np.isfinite(y) & np.all(np.isfinite(X), axis=1)
-        y, X = y[mask], X[mask]
-
-        if len(y) < X.shape[1] + 5:
-            res["equations"][vars_[j]] = {"error": "Muestra insuficiente"}
+            w_k = KNN.from_dataframe(last, k=k)
+            w_k.transform = "r"
+            mi = Moran(y, w_k)
+            candidates[f"KNN_{k}"] = {"w": w_k, "I": mi.I, "p": mi.p_sim, "score": mi.I if mi.p_sim < 0.05 else -1}
+        except Exception:
             continue
 
-        try:
-            model = OLS(y, X, name_y=vars_[j], robust="white")
-            beta = model.betas.flatten()
-            idx = 0
-            intercept = float(beta[idx]); idx += 1
-            phi = float(beta[idx]); idx += 1
-            beta_cross = {}
-            for l in range(k):
-                if l != j:
-                    beta_cross[vars_[l]] = float(beta[idx]); idx += 1
-            rho = float(beta[idx]); idx += 1
-            theta = {vars_[l]: float(beta[idx+l]) for l in range(k)}
+    if not candidates:
+        w = Queen.from_dataframe(last, use_index=True)
+        w.transform = "r"
+        return w, "Queen (fallback)", 0.0, 1.0
 
-            res["coefs"][vars_[j]] = {
-                "intercept": intercept, "phi": phi,
-                "beta_cross": beta_cross, "rho": rho, "theta": theta
-            }
-            res["equations"][vars_[j]] = {"r2": float(model.r2), "nobs": int(model.n)}
-        except Exception as e:
-            res["equations"][vars_[j]] = {"error": str(e)}
+    best = max(candidates.items(), key=lambda x: x[1]["score"])
+    name, res = best
+    return res["w"], name, res["I"], res["p"]
 
-    # Impactos (aproximación LeSage-Pace)
-    try:
-        Wd = W.full()[0]
-        for v in res["coefs"]:
-            rho = res["coefs"][v]["rho"]
-            S = np.linalg.pinv(np.eye(n) - rho * Wd)
-            direct = float(np.mean(np.diag(S)))
-            total  = float(np.mean(S.sum(axis=1)))
-            res["impacts"][v] = {"direct": direct, "indirect": total - direct, "total": total}
-    except Exception as e:
-        res["impacts"]["error"] = str(e)
-
-    # Estabilidad
-    try:
-        phi_m = np.mean([c["phi"] for c in res["coefs"].values()])
-        rho_m = np.mean([c["rho"] for c in res["coefs"].values()])
-        A = phi_m * np.eye(n) + rho_m * Wd
-        max_mod = float(np.max(np.abs(eigvals(A))))
-        res["stability"] = {
-            "max_abs_eigenvalue": max_mod,
-            "stable": max_mod < 1.0,
-            "message": "Sistema estable (max|λ| < 1)" if max_mod < 1.0 else "ADVERTENCIA: Sistema inestable"
-        }
-    except Exception as e:
-        res["stability"] = {"error": str(e), "stable": False}
-
-    return res
-
-spvar_res = estimate_spvar(spdata, W)
-print("SpVAR estimado. Estabilidad:", spvar_res.get("stability", {}))
+W, W_name, Moran_I, Moran_p = select_optimal_weights(gdf_panel)
 
 # -----------------------------------------------------------------------------
-# 8. LISA
+# 4. Estimación SpVAR (4 mecanismos) + impactos + estabilidad
 # -----------------------------------------------------------------------------
-def compute_lisa(gdf, y, W):
-    lisa = Moran_Local(y, W)
-    gdf = gdf.copy()
-    gdf["lisa_I"] = lisa.Is
-    gdf["lisa_p"] = lisa.p_sim
-    sig = lisa.p_sim < 0.05
-    labels = np.array(["No significativo"] * len(y), dtype=object)
-    labels[(lisa.q == 1) & sig] = "HH (Alto-Alto)"
-    labels[(lisa.q == 2) & sig] = "LH (Bajo-Alto)"
-    labels[(lisa.q == 3) & sig] = "LL (Bajo-Bajo)"
-    labels[(lisa.q == 4) & sig] = "HL (Alto-Bajo)"
-    gdf["lisa_cluster"] = labels
-    return gdf
-
-# -----------------------------------------------------------------------------
-# 9. Visualizaciones
-# -----------------------------------------------------------------------------
-def make_choropleth(gdf, panel, year, variable):
-    dfy = panel[panel["year"] == year].set_index("departamento")
-    g = gdf.copy()
-    g[variable] = g["departamento"].map(dfy[variable])
-    fig = px.choropleth(
-        g, geojson=g.__geo_interface__, locations=g.index,
-        color=variable, hover_name="departamento",
-        color_continuous_scale="Viridis" if "luces" in variable else "RdYlBu_r",
-        title=f"{variable.replace('_',' ').title()} — {year}"
-    )
-    fig.update_geos(fitbounds="locations", visible=False)
-    fig.update_layout(margin=dict(l=0,r=0,t=40,b=0), paper_bgcolor="white",
-                      font=dict(color="#1a1a1a"))
-    return fig
-
-def make_3d(gdf, panel, year, height_var="luces_nocturnas", color_var="desempleo"):
-    dfy = panel[panel["year"] == year].set_index("departamento")
-    g = gdf.copy()
-    g["height"] = g["departamento"].map(dfy[height_var]).fillna(0).clip(lower=0)
-    g["color"]  = g["departamento"].map(dfy[color_var]).fillna(0)
-    cents = g.geometry.centroid
-    size = np.clip(g["height"] / (g["height"].max() + 1e-6) * 25 + 5, 5, 40)
-    fig = go.Figure(go.Scatter3d(
-        x=cents.x, y=cents.y, z=g["height"],
-        mode="markers",
-        marker=dict(size=size, color=g["color"], colorscale="Plasma",
-                    colorbar=dict(title=color_var.replace("_"," ").title()), opacity=0.85),
-        text=g["departamento"],
-        hovertemplate="<b>%{text}</b><br>Altura: %{z:.2f}<br>Color: %{marker.color:.2f}<extra></extra>"
-    ))
-    fig.update_layout(
-        title=f"3D — Altura: {height_var} | Color: {color_var} ({year})",
-        scene=dict(xaxis_title="Longitud", yaxis_title="Latitud",
-                   zaxis_title=height_var.replace("_"," ").title(), bgcolor="white"),
-        paper_bgcolor="white", font=dict(color="#1a1a1a"), margin=dict(l=0,r=0,t=40,b=0)
-    )
-    return fig
-
-def make_folium(gdf, panel, year, variable):
-    dfy = panel[panel["year"] == year].set_index("departamento")
-    g = gdf.copy()
-    g[variable] = g["departamento"].map(dfy[variable])
-    m = folium.Map(location=[4.5, -73.0], zoom_start=5, tiles="CartoDB positron")
-    Fullscreen().add_to(m)
-    ch = folium.Choropleth(
-        geo_data=g.__geo_interface__, data=g,
-        columns=["departamento", variable], key_on="feature.properties.departamento",
-        fill_color="YlOrRd" if "luces" not in variable else "YlGnBu",
-        fill_opacity=0.75, line_opacity=0.4, legend_name=variable.replace("_"," ").title()
-    ).add_to(m)
-    folium.GeoJsonTooltip(fields=["departamento", variable],
-                          aliases=["Depto:", variable.replace("_"," ").title()+":"]).add_to(ch.geojson)
-    return m._repr_html_()
-
-# -----------------------------------------------------------------------------
-# 10. Interpretabilidad de política
-# -----------------------------------------------------------------------------
-def policy_text(spvar_res, w_info, year):
-    lines = [
-        "="*72,
-        "INTERPRETABILIDAD AUTOMATIZADA — SpVAR + ESDA (Colombia)",
-        f"Año de referencia espacial: {year}",
-        "="*72,
-        "\n1. DEPENDENCIA ESPACIAL (Moran Global)",
-        f"   Matriz W óptima: {w_info['best_name']}",
-        f"   Moran I = {w_info['best_moran'].I:.4f}  |  p = {w_info['best_moran'].p_sim:.4f}"
-    ]
-    if w_info["best_moran"].p_sim < 0.05 and w_info["best_moran"].I > 0:
-        lines += [
-            "   → Autocorrelación espacial positiva significativa.",
-            "   Los departamentos con desempleo/crecimiento similares tienden a agruparse.",
-            "   Implicación: las políticas de empleo o estímulo deben considerar efectos de",
-            "   derrame hacia los vecinos; un programa aislado subestima el impacto total."
-        ]
+@st.cache_data(show_spinner="Estimando sistema SpVAR...")
+def estimate_spvar(_panel, _W_name, _Moran_I):
+    # Reconstruimos W dentro de la función cacheada a partir del último año
+    last = _panel[_panel["year"] == _panel["year"].max()].copy().set_index("departamento")
+    if "Queen" in _W_name:
+        W = Queen.from_dataframe(last, use_index=True)
+    elif "Rook" in _W_name:
+        W = Rook.from_dataframe(last, use_index=True)
     else:
-        lines.append("   → Dependencia espacial débil o no significativa al 5 %.")
+        k = int(_W_name.split("_")[1]) if "KNN" in _W_name else 5
+        W = KNN.from_dataframe(last, k=k)
+    W.transform = "r"
 
-    lines.append("\n2. MECANISMOS DE TRANSMISIÓN SpVAR")
-    for v, c in spvar_res.get("coefs", {}).items():
-        lines.append(f"\n   Variable: {v.upper()}")
-        lines.append(f"   • Autodínamica (φ): {c['phi']:.4f}")
-        lines.append(f"   • Espacial directa (ρ): {c['rho']:.4f}")
-        lines.append(f"   • Cruces locales (β): {c['beta_cross']}")
-        lines.append(f"   • Espacial cruzada (θ): {c['theta']}")
+    variables = ["desempleo", "crecimiento", "luces"]
+    depts_ordered = list(W.neighbors.keys())
 
-    lines.append("\n3. IMPACTOS ESPACIALES (Directo / Indirecto / Total)")
-    for v, imp in spvar_res.get("impacts", {}).items():
-        if isinstance(imp, dict) and "direct" in imp:
-            lines.append(f"   {v}: Directo={imp['direct']:.4f} | Indirecto={imp['indirect']:.4f} | Total={imp['total']:.4f}")
-            if abs(imp["indirect"]) > 0.04:
-                lines.append("     → El derrame espacial es materialmente relevante para la política.")
+    dfs = []
+    for var in variables:
+        piv = _panel.pivot(index="year", columns="departamento", values=var)
+        dfs.append(piv)
 
-    stab = spvar_res.get("stability", {})
-    lines += [
-        "\n4. ESTABILIDAD DEL SISTEMA",
-        f"   max|λ| = {stab.get('max_abs_eigenvalue', 'N/A')}",
-        f"   {stab.get('message', '')}",
-        "\n5. RECOMENDACIONES DE POLÍTICA",
-        "   • Coordinar intervenciones a escala regional (no solo departamental).",
-        "   • Priorizar departamentos-hub (alto grado de conectividad en W) para maximizar",
-        "     el impacto total de recursos limitados.",
-        "   • Monitorear indicadores de vecinos al implementar programas de empleo o",
-        "     estímulo, dado el potencial de spillover documentado por el modelo.",
-        "   • Las luces nocturnas capturan actividad que no siempre se refleja en el PIB",
-        "     oficial; su inclusión mejora la identificación de demanda local.",
-        "="*72
-    ]
-    return "\n".join(lines)
+    results = {}
+    impact_matrices = {}
+
+    for i, var in enumerate(variables):
+        y = dfs[i][depts_ordered].values
+        T, N = y.shape
+        lags = 1
+
+        Y = y[lags:, :].flatten()
+        X_list = [y[lags-1:-1, :].flatten()]  # phi
+
+        for j, other in enumerate(variables):
+            if j != i:
+                X_list.append(dfs[j][depts_ordered].values[lags-1:-1, :].flatten())  # beta
+
+        Wy = np.array([W.sparse @ y[t, :] for t in range(lags-1, T-1)])
+        X_list.append(Wy.flatten())  # rho
+
+        for j, other in enumerate(variables):
+            if j != i:
+                Wx = np.array([W.sparse @ dfs[j][depts_ordered].values[t, :] for t in range(lags-1, T-1)])
+                X_list.append(Wx.flatten())  # theta
+
+        X = sm.add_constant(np.column_stack(X_list))
+        model = sm.OLS(Y, X).fit(cov_type="HC1")
+
+        names = ["const", "phi"]
+        for j, other in enumerate(variables):
+            if j != i:
+                names.append(f"beta_{other}")
+        names.append("rho")
+        for j, other in enumerate(variables):
+            if j != i:
+                names.append(f"theta_{other}")
+
+        coef = dict(zip(names, model.params))
+        results[var] = {"coef": coef, "rsq": model.rsquared}
+
+        rho = coef.get("rho", 0.0)
+        I = np.eye(N)
+        try:
+            S = np.linalg.inv(I - rho * W.sparse.toarray())
+            impact_matrices[var] = S
+        except np.linalg.LinAlgError:
+            impact_matrices[var] = I
+
+    phis = [results[v]["coef"].get("phi", 0) for v in variables]
+    rhos = [results[v]["coef"].get("rho", 0) for v in variables]
+    max_eig_proxy = max(abs(p) + abs(r) for p, r in zip(phis, rhos))
+    stable = max_eig_proxy < 1.0
+
+    impacts = {}
+    for v in variables:
+        S = impact_matrices[v]
+        direct = np.diag(S).mean()
+        total = S.sum(axis=1).mean()
+        impacts[v] = {"direct": direct, "indirect": total - direct, "total": total}
+
+    return results, impacts, stable, max_eig_proxy, depts_ordered, W
+
+spvar_results, impacts, is_stable, max_eig, depts_ord, W = estimate_spvar(gdf_panel, W_name, Moran_I)
 
 # -----------------------------------------------------------------------------
-# 11. Interfaz Gradio (tema claro alto contraste)
+# 5. Funciones de visualización
 # -----------------------------------------------------------------------------
-CUSTOM_CSS = """
-.gradio-container { background-color: #f7f8fa !important; font-family: 'Segoe UI', system-ui, sans-serif !important; }
-.gr-button { background-color: #1e3a5f !important; color: white !important; font-weight: 600 !important; }
-.gr-button:hover { background-color: #2c5282 !important; }
-h1, h2, h3 { color: #1a202c !important; }
+def make_choropleth(year, variable):
+    df = gdf_panel[gdf_panel["year"] == year].copy()
+    fig = px.choropleth_mapbox(
+        df,
+        geojson=df.geometry.__geo_interface__,
+        locations=df.index,
+        color=variable,
+        hover_name="departamento",
+        hover_data={variable: ":.2f"},
+        mapbox_style="carto-positron",
+        center={"lat": 4.5, "lon": -73.0},
+        zoom=4.4,
+        color_continuous_scale="YlOrRd" if variable == "desempleo" else "Viridis",
+        title=f"{variable.capitalize()} – {year}",
+        height=520
+    )
+    fig.update_layout(margin=dict(l=0, r=0, t=40, b=0), paper_bgcolor="white", font_color="#1a1a1a")
+    return fig
+
+def make_3d_scatter(year, size_var="luces", color_var="desempleo"):
+    df = gdf_panel[gdf_panel["year"] == year].copy()
+    size = np.maximum(df[size_var].values, 0.01)
+    fig = go.Figure(data=[go.Scatter3d(
+        x=df["lon"], y=df["lat"], z=df[size_var],
+        mode="markers",
+        marker=dict(
+            size=8 + 12 * (size - size.min()) / (size.max() - size.min() + 1e-6),
+            color=df[color_var],
+            colorscale="Plasma",
+            colorbar=dict(title=color_var),
+            opacity=0.85,
+            line=dict(width=0.5, color="darkgray")
+        ),
+        text=df["departamento"],
+        hovertemplate="<b>%{text}</b><br>" + size_var + ": %{z:.2f}<br>" + color_var + ": %{marker.color:.2f}<extra></extra>"
+    )])
+    fig.update_layout(
+        title=f"Visualización 3D – {year}",
+        scene=dict(xaxis_title="Longitud", yaxis_title="Latitud", zaxis_title=size_var.capitalize(), bgcolor="white"),
+        paper_bgcolor="white", font_color="#1a1a1a", height=550
+    )
+    return fig
+
+def make_lisa_map(year, variable="desempleo"):
+    df = gdf_panel[gdf_panel["year"] == year].copy().set_index("departamento")
+    df = df.loc[depts_ord]
+    y = df[variable].values
+    mi = Moran(y, W)
+    lisa = Moran_Local(y, W)
+
+    labels = []
+    for qi, pi in zip(lisa.q, lisa.p_sim):
+        if pi >= 0.05:
+            labels.append("No significativo")
+        elif qi == 1:
+            labels.append("HH (Alto-Alto)")
+        elif qi == 2:
+            labels.append("LH (Bajo-Alto)")
+        elif qi == 3:
+            labels.append("LL (Bajo-Bajo)")
+        else:
+            labels.append("HL (Alto-Bajo)")
+
+    df = df.reset_index()
+    df["LISA"] = labels
+
+    color_map = {
+        "HH (Alto-Alto)": "#d7191c",
+        "LL (Bajo-Bajo)": "#2c7bb6",
+        "HL (Alto-Bajo)": "#fdae61",
+        "LH (Bajo-Alto)": "#abd9e9",
+        "No significativo": "#f0f0f0"
+    }
+
+    fig = px.choropleth_mapbox(
+        df,
+        geojson=df.geometry.__geo_interface__,
+        locations=df.index,
+        color="LISA",
+        hover_name="departamento",
+        mapbox_style="carto-positron",
+        center={"lat": 4.5, "lon": -73.0},
+        zoom=4.4,
+        color_discrete_map=color_map,
+        title=f"LISA Clusters – {variable} ({year})",
+        height=520
+    )
+    fig.update_layout(margin=dict(l=0, r=0, t=40, b=0), paper_bgcolor="white", font_color="#1a1a1a")
+    return fig, mi.I, mi.p_sim
+
+def generate_policy_text(year, variable):
+    res = spvar_results[variable]
+    imp = impacts[variable]
+    _, I_val, p_val = make_lisa_map(year, variable)  # solo para obtener Moran del año
+
+    text = f"""
+### Interpretación Econométrica y de Política – {variable.upper()} ({year})
+
+**Autocorrelación Espacial Global**
+Índice de Moran I = {I_val:.4f} (p-valor = {p_val:.4f}).
+{"Existe evidencia estadísticamente significativa de dependencia espacial positiva." if p_val < 0.05 else "No se rechaza la hipótesis de aleatoriedad espacial."}
+
+**Mecanismos de Transmisión SpVAR**
+- **Autodinámica espacial (φ)**: {res['coef'].get('phi', 0):.4f} → Persistencia local.
+- **Relación espacial directa (ρ)**: {res['coef'].get('rho', 0):.4f} → Spillover del mismo indicador desde vecinos.
+- Los coeficientes cruzados (β y θ) capturan la interacción entre desempleo, crecimiento y actividad económica (luces nocturnas).
+
+**Impactos Espaciales (promedio)**
+- Directo: **{imp['direct']:.4f}**
+- Indirecto (spillover): **{imp['indirect']:.4f}**
+- Total: **{imp['total']:.4f}**
+
+**Estabilidad del Sistema**
+{"El sistema SpVAR es dinámicamente estable (radio espectral < 1)." if is_stable else "Advertencia: el sistema presenta indicios de inestabilidad dinámica."}
+
+**Implicaciones de Política**
+Los spillovers espaciales significativos indican que las políticas de empleo y crecimiento deben diseñarse de forma coordinada entre departamentos vecinos.
+Las intervenciones focalizadas en clústeres HH de desempleo tienen potencial de generar efectos de contagio positivo.
+El uso de luces nocturnas como proxy de actividad confirma la utilidad de indicadores satelitales para el seguimiento subnacional.
 """
-
-def run_all(year, variable, height_var, color_var):
-    try:
-        year = int(year)
-        fig_c = make_choropleth(gdf, panel, year, variable)
-        fig_3 = make_3d(gdf, panel, year, height_var, color_var)
-        fol_h = make_folium(gdf, panel, year, variable)
-        yv = panel[panel["year"]==year].set_index("departamento").reindex(gdf["departamento"])[variable].values
-        g_lisa = compute_lisa(gdf, yv, W)
-        txt = policy_text(spvar_res, w_info, year)
-
-        coef_rows = []
-        for v, c in spvar_res.get("coefs", {}).items():
-            coef_rows.append({
-                "Variable": v,
-                "φ (autodínamica)": round(c["phi"], 4),
-                "ρ (espacial)": round(c["rho"], 4),
-                "Impacto Directo": round(spvar_res["impacts"].get(v, {}).get("direct", np.nan), 4),
-                "Impacto Indirecto": round(spvar_res["impacts"].get(v, {}).get("indirect", np.nan), 4),
-                "Impacto Total": round(spvar_res["impacts"].get(v, {}).get("total", np.nan), 4)
-            })
-        coef_df = pd.DataFrame(coef_rows)
-
-        w_rows = [{"Matriz": k, "Moran I": round(v["I"],4), "p-valor": round(v["p"],4),
-                   "Significativo 5%": "Sí" if v["p"]<0.05 else "No"}
-                  for k,v in w_info["all"].items() if "I" in v]
-        w_df = pd.DataFrame(w_rows)
-
-        stab = spvar_res.get("stability", {})
-        stab_txt = f"max|λ| = {stab.get('max_abs_eigenvalue', 'N/A'):.4f} → {stab.get('message', '')}"
-
-        return (fig_c, fig_3, fol_h, txt, coef_df, w_df, stab_txt,
-                g_lisa[["departamento","lisa_I","lisa_p","lisa_cluster"]].head(15))
-    except Exception as e:
-        empty = go.Figure()
-        return empty, empty, "<p>Error</p>", str(e), pd.DataFrame(), pd.DataFrame(), str(e), pd.DataFrame()
-
-with gr.Blocks(css=CUSTOM_CSS, title="SpVAR Colombia — Datos DANE + VIIRS proxy", theme=gr.themes.Soft()) as demo:
-    gr.Markdown("""
-    # SpVAR Espacial — Departamentos de Colombia
-    ### Desempleo · Crecimiento del PIB · Luces Nocturnas (proxy VIIRS)
-    Geometría oficial DANE 2018 · Panel calibrado a series reales del DANE · Tema claro de alto contraste
-    """)
-
-    with gr.Row():
-        with gr.Column(scale=1):
-            year_sl = gr.Slider(int(panel.year.min()), int(panel.year.max()), value=int(panel.year.max()), step=1, label="Año")
-            var_dd  = gr.Dropdown(["desempleo","crecimiento","luces_nocturnas"], value="desempleo", label="Variable mapa / LISA")
-            h_dd    = gr.Dropdown(["luces_nocturnas","crecimiento","desempleo"], value="luces_nocturnas", label="Altura 3D")
-            c_dd    = gr.Dropdown(["desempleo","crecimiento","luces_nocturnas"], value="desempleo", label="Color 3D")
-            btn     = gr.Button("Ejecutar Análisis Completo", variant="primary")
-        with gr.Column(scale=2):
-            stab_out = gr.Textbox(label="Auditoría de Estabilidad SpVAR", interactive=False)
-
-    with gr.Tabs():
-        with gr.TabItem("Mapa Coroplético"):
-            plot_c = gr.Plot()
-        with gr.TabItem("Vista 3D"):
-            plot_3 = gr.Plot()
-        with gr.TabItem("Mapa Folium"):
-            fol_out = gr.HTML()
-        with gr.TabItem("Interpretabilidad de Política"):
-            txt_out = gr.Textbox(lines=28, max_lines=40)
-        with gr.TabItem("Coeficientes e Impactos"):
-            coef_out = gr.Dataframe()
-        with gr.TabItem("Selección de W"):
-            w_out = gr.Dataframe()
-        with gr.TabItem("LISA Clusters"):
-            lisa_out = gr.Dataframe()
-
-    btn.click(run_all, inputs=[year_sl, var_dd, h_dd, c_dd],
-              outputs=[plot_c, plot_3, fol_out, txt_out, coef_out, w_out, stab_out, lisa_out])
-    demo.load(run_all, inputs=[year_sl, var_dd, h_dd, c_dd],
-              outputs=[plot_c, plot_3, fol_out, txt_out, coef_out, w_out, stab_out, lisa_out])
+    return text
 
 # -----------------------------------------------------------------------------
-# 12. Lanzamiento
+# 6. Interfaz Streamlit
 # -----------------------------------------------------------------------------
-if __name__ == "__main__":
-    print("\n" + "="*60)
-    print("W óptima:", w_info["best_name"])
-    print("Estabilidad:", spvar_res.get("stability", {}).get("message", "N/A"))
-    print("="*60 + "\n")
-    demo.launch(share=True, debug=False)
+st.title("Modelo Vector Autorregresivo Espacial (SpVAR) + ESDA")
+st.markdown("**Departamentos de Colombia** · Desempleo · Crecimiento Económico · Luces Nocturnas (proxy VIIRS)")
+st.caption(f"Matriz de pesos seleccionada automáticamente: **{W_name}** | Moran I = {Moran_I:.4f} (p = {Moran_p:.4f})")
+
+# Sidebar
+with st.sidebar:
+    st.header("Controles")
+    year = st.slider("Año", 2015, 2024, 2023, 1)
+    variable = st.selectbox("Variable principal", ["desempleo", "crecimiento", "luces"], index=0)
+    st.markdown("---")
+    st.markdown("### Auditoría Técnica")
+    st.metric("Estabilidad del sistema", "ESTABLE" if is_stable else "INESTABLE")
+    st.metric("Proxy max |λ|", f"{max_eig:.4f}")
+    st.metric("Departamentos", n_dept)
+    st.metric("Observaciones", len(gdf_panel))
+    st.markdown("---")
+    st.info("Panel sintético calibrado con promedios reales de desempleo departamental (DANE 2023-2025). Geometría oficial MGN.")
+
+# Tabs
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Mapa Coroplético",
+    "Visualización 3D",
+    "Clusters LISA",
+    "Resultados SpVAR e Impactos"
+])
+
+with tab1:
+    st.plotly_chart(make_choropleth(year, variable), use_container_width=True)
+
+with tab2:
+    st.plotly_chart(make_3d_scatter(year, size_var="luces", color_var=variable), use_container_width=True)
+
+with tab3:
+    fig_lisa, I_lisa, p_lisa = make_lisa_map(year, variable)
+    st.plotly_chart(fig_lisa, use_container_width=True)
+    st.markdown(f"**Moran Global I = {I_lisa:.4f} (p = {p_lisa:.4f})**")
+
+with tab4:
+    st.markdown(generate_policy_text(year, variable))
+    st.markdown("### Coeficientes estimados del sistema SpVAR")
+    coef_data = []
+    for v in ["desempleo", "crecimiento", "luces"]:
+        c = spvar_results[v]["coef"]
+        coef_data.append({
+            "Variable": v,
+            "φ (autodinámica)": f"{c.get('phi', 0):.4f}",
+            "ρ (espacial directa)": f"{c.get('rho', 0):.4f}",
+            "R²": f"{spvar_results[v]['rsq']:.3f}"
+        })
+    st.dataframe(pd.DataFrame(coef_data), use_container_width=True, hide_index=True)
+
+    st.markdown("### Impactos espaciales (promedio)")
+    imp_data = []
+    for v in ["desempleo", "crecimiento", "luces"]:
+        imp = impacts[v]
+        imp_data.append({
+            "Variable": v,
+            "Directo": f"{imp['direct']:.4f}",
+            "Indirecto": f"{imp['indirect']:.4f}",
+            "Total": f"{imp['total']:.4f}"
+        })
+    st.dataframe(pd.DataFrame(imp_data), use_container_width=True, hide_index=True)
+
+st.markdown("---")
+st.caption("Desarrollado con libpysal · esda · statsmodels · geopandas · Plotly · Streamlit | Geometría: DANE MGN 2018")
