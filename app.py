@@ -22,22 +22,6 @@ Original file is located at
 # -----------------------------------------------------------------------------
 # 1. Instalación de dependencias
 # -----------------------------------------------------------------------------
-import subprocess, sys
-
-def install(pkg):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", pkg])
-
-needed = [
-    "geopandas", "libpysal", "esda", "spreg", "mapclassify",
-    "folium", "plotly", "gradio", "statsmodels", "scikit-learn",
-    "shapely", "pyproj", "matplotlib", "seaborn", "numpy", "pandas",
-    "scipy", "requests", "openpyxl"
-]
-for p in needed:
-    try:
-        __import__(p.split("==")[0].replace("-", "_"))
-    except ImportError:
-        install(p)
 
 # -----------------------------------------------------------------------------
 # 2. Imports
